@@ -424,7 +424,7 @@ Help the user understand their multi-currency cost estimate, global market track
             st.markdown(prompt)
         with st.chat_message("assistant"):
             try:
-                history = "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in st.session_state.chat[-4:]])
+                history = "\n".join([f"{m['role'].capitalize()}: {m['content']}" for m in st.session_state.chat[-4:]])
                 stream = genai.Client(api_key=GEMINI_KEY).models.generate_content_stream(
                     model=GEMINI_MODEL, contents=f"{build_context()}\n\nRecent Conversation:\n{history}")
                 reply = st.write_stream(chunk.text for chunk in stream if chunk.text)
