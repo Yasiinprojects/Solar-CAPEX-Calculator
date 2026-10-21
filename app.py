@@ -231,6 +231,9 @@ def create_pdf_summary(df_boq, subtotal_val, cont_pct, cont_val, grand_val, kw_v
     title = ParagraphStyle("TitleStyle", parent=styles["Heading1"], fontSize=18, textColor=colors.HexColor("#1F3864"), spaceAfter=6)
     sub = ParagraphStyle("SubtitleStyle", parent=styles["Normal"], fontSize=10, textColor=colors.HexColor("#555555"), spaceAfter=15)
 
+    # NEW: Small footer style for the disclaimer
+    disclaimer_style = ParagraphStyle("DisclaimerStyle", parent=styles["Normal"], fontSize=7, textColor=colors.HexColor("#777777"), spaceBefore=15)
+
     data = [["Ref", "Item Description", "Qty", "Unit", f"Rate ({sym})", f"Total ({sym})"]]
     data += [[str(r[0]), str(r[1]), f"{r[2]:,.1f}", str(r[3]), f"{sym}{r[4]:,.2f}", f"{sym}{r[2] * r[4]:,.2f}"]
              for r in df_boq.itertuples(index=False)]
@@ -547,6 +550,8 @@ assumptions = [
     ("Peak AC load (kW)", kw), ("Grid voltage", volt_label),
     ("Power factor", pf), ("Design current (A)", round(current, 1)), ("Trenching condition", ground),
     ("Scope exclusions", "PV/BESS equipment, utility fees, studies, SCADA, land"),
+    # NEW: Added disclaimer to the audit trail
+    ("Legal Disclaimer", "For indicative budgeting and preliminary feasibility only; not a binding EPC or DNO quotation."),
     ("Status", f"Budget-stage estimate displayed in {selected_curr_label}"),
 ]
 
