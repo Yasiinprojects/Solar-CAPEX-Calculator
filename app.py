@@ -366,9 +366,7 @@ with tab1:
     r1, r2 = st.columns(2)
     r1.metric(f"Low Estimate (-{accuracy:.0%})", f"{sym}{grand * (1 - accuracy):,.0f}")
     r2.metric(f"High Estimate (+{accuracy:.0%})", f"{sym}{grand * (1 + accuracy):,.0f}")
-    st.info(f"Region: **{selected_region}** | Currency: **{selected_curr_label}** | Mode: **{mode_label}** | "
-            f"CapEx intensity: **{sym}{grand / kw:,.2f} per kW**.")
-
+    
 with tab2:
     st.subheader("📥 Export Reports")
     st.caption("Download your finalized estimate as an Excel workbook or a PDF executive summary.")
