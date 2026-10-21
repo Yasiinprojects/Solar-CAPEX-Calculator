@@ -289,10 +289,17 @@ def build_excel(df_boq, inputs, cont_pct, acc, sym):
         (hi, "High estimate", f"=F{g}*(1+F{pa})"),
     ):
         ws[f"E{row}"], ws[f"F{row}"] = label, val
+        
     money = f'"{sym}"#,##0.00'
     for row in range(2, last + 1):
         for col, fmt in (("C", "#,##0.0"), ("E", money), ("F", money)):
             ws[f"{col}{row}"].number_format = fmt
+            
+    # --- ADDED: Commercial Disclaimer at the bottom of the main sheet ---
+    disc_row = hi + 2
+    ws[f"A{disc_row}"] = "Commercial Disclaimer: This document is generated for indicative budgeting and preliminary feasibility analysis only. It does not constitute a binding EPC quotation, DNO grid connection offer, or commercial contract. All unit rates and market indices are subject to formal site survey and engineering verification."
+    ws[f"A{disc_row}"].font = Font(italic=True, size=9, color="555555")
+
     for col, w in zip("ABCDEF", (10, 70, 10, 8, 18, 18)):
         ws.column_dimensions[col].width = w
     ws.freeze_panes = "A2"
@@ -305,6 +312,7 @@ def build_excel(df_boq, inputs, cont_pct, acc, sym):
     wa.column_dimensions["B"].width = 70
     for c in wa[1]:
         c.font = Font(bold=True)
+        
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
