@@ -15,7 +15,6 @@ st.set_page_config(page_title="Solar & BESS CapEx Engine", page_icon="⚡", layo
 
 
 # ============================== GLOBAL MASTER MARKET TRACKER ==================
-# Global industrial benchmark feeds (COMEX Copper & US Midwest HRC Steel as global proxies)
 COPPER_SYMBOL, COPPER_BASE, COPPER_SHARE = "HG=F", 4.00, 0.50
 STEEL_SYMBOL, STEEL_BASE, STEEL_SHARE = "HRC=F", 1000.0, 0.30
 YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{}"
@@ -35,16 +34,24 @@ def to_index(price, base, share):
 
 @st.cache_data(ttl=1800)  # Caches live market data for 30 minutes
 def get_global_market_data():
-    """Fetches global master FX, copper, and steel benchmarks."""
-    d = {"gbp_usd": 1.32, "copper_index": 1.05, "steel_index": 1.02, "copper_price": None, "steel_price": None,
-         "fx_live": False, "copper_live": False, "steel_live": False}
+    """Fetches live multi-currency rates relative to USD and global commodity benchmarks."""
+    d = {
+        "rates": {"USD": 1.0, "GBP": 0.78, "EUR": 0.92, "CNY": 7.20, "MYR": 4.70},
+        "copper_index": 1.05, "steel_index": 1.02, "copper_price": None, "steel_price": None,
+        "fx_live": False, "copper_live": False, "steel_live": False
+    }
     try:
-        r = requests.get("https://open.er-api.com/v6/latest/GBP", timeout=5)
-        usd = r.json().get("rates", {}).get("USD") if r.status_code == 200 else None
-        if usd:
-            d["gbp_usd"], d["fx_live"] = usd, True
+        # Fetch rates based on USD base for universal cross-currency conversion
+        r = requests.get("https://open.er-api.com/v6/latest/USD", timeout=5)
+        if r.status_code == 200:
+            data_rates = r.json().get("rates", {})
+            for cur in ["USD", "GBP", "EUR", "CNY", "MYR"]:
+                if cur in data_rates:
+                    d["rates"][cur] = data_rates[cur]
+            d["fx_live"] = True
     except Exception:
         pass
+
     for key, symbol, base, share in (("copper", COPPER_SYMBOL, COPPER_BASE, COPPER_SHARE),
                                      ("steel", STEEL_SYMBOL, STEEL_BASE, STEEL_SHARE)):
         try:
@@ -53,6 +60,7 @@ def get_global_market_data():
                 d[f"{key}_price"], d[f"{key}_index"], d[f"{key}_live"] = price, to_index(price, base, share), True
         except Exception:
             pass
+
     flags = [d["fx_live"], d["copper_live"], d["steel_live"]]
     d["status"] = "GLOBAL MASTER CONNECTED" if all(flags) else "PARTIAL GLOBAL FEED" if any(flags) else "OFFLINE FALLBACK MODE"
     return d
@@ -62,7 +70,7 @@ live_market = get_global_market_data()
 
 
 # ============================== EXPORT BUILDERS ===============================
-def create_pdf_summary(df_boq, subtotal_val, cont_pct, cont_val, grand_val, kw_val, volt_label_val, region_val, fx_rate, sym, mode_label):
+def create_pdf_summary(df_boq, subtotal_val, cont_pct, cont_val, grand_val, kw_val, volt_label_val, region_val, curr_name, sym, mode_label):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
     styles = getSampleStyleSheet()
@@ -92,7 +100,7 @@ def create_pdf_summary(df_boq, subtotal_val, cont_pct, cont_val, grand_val, kw_v
     ]))
     doc.build([
         Paragraph(f"⚡ Solar & BESS CapEx Executive Summary ({region_val})", title),
-        Paragraph(f"Mode: {mode_label} | Currency: {sym} | Global FX: {fx_rate:.3f} | Load: {kw_val:,.0f} kW | Voltage: {volt_label_val}", sub),
+        Paragraph(f"Mode: {mode_label} | Currency: {curr_name} | Load: {kw_val:,.0f} kW | Voltage: {volt_label_val}", sub),
         Spacer(1, 10),
         t,
     ])
@@ -143,49 +151,45 @@ def build_excel(df_boq, inputs, cont_pct, acc, sym):
 
 
 st.title("⚡ Solar & BESS Interconnection CapEx Engine")
-st.caption("Global master market engine with regional in-country execution overlays.")
+st.caption("Global Master Tracker with Independent Multi-Currency Conversion & Manual UK Cost Controls.")
 st.markdown("---")
 
-# ============================== REGIONAL PROFILES & OVERLAYS =================
-MARKET_PROFILES = {
-    "United Kingdom (UK)": {
-        "currency_name": "GBP (£)", "sym": "£", "fx_target": "GBP",
-        "labor_index": 1.35, "civil_trench_index": 1.45, "import_duty_index": 1.03,
-        "voltages": ["0.400 kV (Low Voltage)", "11 kV (Medium Voltage)", "33 kV (Medium Voltage)"],
-        "base_trench": {"Soft": 45.0, "Mixed": 75.0, "Existing": 125.0},
-    },
-    "Global Baseline (USD)": {
-        "currency_name": "USD ($)", "sym": "$", "fx_target": "USD",
-        "labor_index": 1.00, "civil_trench_index": 1.00, "import_duty_index": 1.00,
-        "voltages": ["0.415 kV (Low Voltage)", "11 kV (Medium Voltage)", "33 kV (Medium Voltage)"],
-        "base_trench": {"Soft": 35.0, "Mixed": 55.0, "Existing": 95.0},
-    },
-}
-
+# ============================== SIDEBAR CONTROLS =============================
 sb = st.sidebar
-sb.header("1. Regional Market Selection")
-selected_region = sb.selectbox("Project Region & Market Profile", list(MARKET_PROFILES.keys()), index=0)
-profile = MARKET_PROFILES[selected_region]
 
-# Automatically set currency based on regional profile
-sym = profile["sym"]
-fx = live_market["gbp_usd"]
+sb.header("1. Presentation Currency")
+currency_options = {
+    "US Dollar ($)": {"code": "USD", "sym": "$"},
+    "British Pound (£)": {"code": "GBP", "sym": "£"},
+    "Euro (€)": {"code": "EUR", "sym": "€"},
+    "Chinese Yuan (¥)": {"code": "CNY", "sym": "¥"},
+    "Malaysian Ringgit (RM)": {"code": "MYR", "sym": "RM"}
+}
+selected_curr_label = sb.selectbox("Display Estimate In", list(currency_options.keys()), index=0)
+curr_info = currency_options[selected_curr_label]
+curr_code, sym = curr_info["code"], curr_info["sym"]
 
-sb.header("2. Pricing & Engine Mode")
+sb.header("2. Regional Market Selection")
+selected_region = sb.selectbox("Project Region & Market Profile", ["United Kingdom (UK)", "Global Baseline (USD)"], index=0)
+is_uk = selected_region == "United Kingdom (UK)"
+
+sb.header("3. Global Master Pricing Mode")
 bypass = sb.checkbox(
     "🔓 Manual Rate Mode (Bypass Global Tracker)", value=False,
-    help="Disables live global commodity indexing and FX scaling to allow direct manual overrides in the BOQ.",
+    help="Disables live global commodity indexing and FX scaling to allow direct manual overrides.",
 )
 
 if bypass:
-    copper_factor = steel_factor = fx_multiplier = 1.0
-    mode_label, status_color, status_text = "Manual Rate Mode (Tracker Bypassed)", "#D97706", "MANUAL OVERRIDE ACTIVE"
+    copper_factor = steel_factor = 1.0
+    fx_multiplier = 1.0
+    mode_label, status_color, status_text = "Manual Rate Mode (Global Tracker Bypassed)", "#D97706", "MANUAL OVERRIDE ACTIVE"
 else:
     copper_factor, steel_factor = live_market["copper_index"], live_market["steel_index"]
-    # Currency conversion based on regional target
-    fx_multiplier = (1.0 / fx) if profile["fx_target"] == "GBP" else 1.0
+    # Convert from base USD engine into selected presentation currency using live rates
+    usd_to_target_rate = live_market["rates"].get(curr_code, 1.0)
+    fx_multiplier = usd_to_target_rate
     fallbacks = [n for n, k in (("FX", "fx_live"), ("copper", "copper_live"), ("steel", "steel_live")) if not live_market[k]]
-    mode_label = ("Global Master Indexed" if not fallbacks else f"Global Master (defaults used for {', '.join(fallbacks)})")
+    mode_label = ("Global Master Indexed (Live)" if not fallbacks else f"Global Master (defaults used for {', '.join(fallbacks)})")
     status_text = live_market["status"]
     status_color = {"GLOBAL MASTER CONNECTED": "#10B981", "PARTIAL GLOBAL FEED": "#F59E0B"}.get(status_text, "#EF4444")
 
@@ -202,23 +206,42 @@ sb.markdown(
 <span style="color:#94A3B8;font-size:11px;font-weight:700;letter-spacing:0.5px;">GLOBAL MASTER TERMINAL</span>
 <span style="background-color:{status_color};color:white;font-size:9px;font-weight:700;padding:2px 6px;border-radius:4px;">{status_text}</span></div>
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-family:monospace;">
-{tile("GLOBAL FX · " + ("LIVE" if live_market["fx_live"] else "BENCHMARK"), f"{fx:.3f}", "#F8FAFC")}{tile("COPPER · " + ("LIVE" if live_market["copper_live"] else "BENCHMARK"), f"{copper_factor:.2f}x", "#38BDF8")}
-{tile("STEEL · " + ("LIVE" if live_market["steel_live"] else "BENCHMARK"), f"{steel_factor:.2f}x", "#38BDF8")}{tile("REGION OVERLAY", selected_region.split()[0], "#38BDF8")}
+{tile(f"FX RATE ({curr_code})", f"{fx_multiplier:.3f}", "#F8FAFC")}{tile("COPPER INDEX", f"{copper_factor:.2f}x", "#38BDF8")}
+{tile("STEEL INDEX", f"{steel_factor:.2f}x", "#38BDF8")}{tile("CURRENCY", curr_code, "#38BDF8")}
 </div></div>""",
     unsafe_allow_html=True,
 )
 
-duty, labor_idx = profile["import_duty_index"], profile["labor_index"]
+# ============================== UK MANUAL LOCAL COST CONTROLS =================
+if is_uk:
+    sb.header("4. UK Local In-Country Cost Controls")
+    sb.caption("Enter proprietary UK labor rates, civil trenching norms, and compliance overheads (Base: GBP).")
+    labor_idx = sb.number_input("UK M&E Labor Multiplier / Index", 0.80, 2.50, 1.35, 0.05)
+    trench_soft = sb.number_input("Trenching Rate - Soft Ground (£/m)", 20.0, 150.0, 45.0, 5.0)
+    trench_mixed = sb.number_input("Trenching Rate - Mixed Ground (£/m)", 40.0, 250.0, 75.0, 5.0)
+    trench_exist = sb.number_input("Trenching Rate - Existing Asphalt (£/m)", 60.0, 400.0, 125.0, 5.0)
+    duty = sb.number_input("UKCA & Import Compliance Factor", 1.00, 1.20, 1.03, 0.01)
+    voltages = ["0.400 kV (Low Voltage)", "11 kV (Medium Voltage)", "33 kV (Medium Voltage)"]
+    # Because UK manual inputs are natively in GBP, normalize them to USD base if presentation currency is different
+    gbp_to_usd = 1.0 / live_market["rates"].get("GBP", 0.78)
+    trench_soft *= gbp_to_usd
+    trench_mixed *= gbp_to_usd
+    trench_exist *= gbp_to_usd
+else:
+    labor_idx = 1.00
+    trench_soft, trench_mixed, trench_exist = 35.0, 55.0, 95.0
+    duty = 1.00
+    voltages = ["0.415 kV (Low Voltage)", "11 kV (Medium Voltage)", "33 kV (Medium Voltage)"]
 
-sb.header("3. System & Grid Setup")
+sb.header("5. System & Grid Setup")
 kw = sb.number_input("Peak AC System Load (kW)", 50.0, 10000.0, 500.0, 50.0)
-volt_label = sb.selectbox("Grid Interconnection Voltage", profile["voltages"], index=1)
+volt_label = sb.selectbox("Grid Interconnection Voltage", voltages, index=1)
 V = next(v for k, v in (("0.400", 400), ("0.415", 415), ("11 kV", 11000), ("33 kV", 33000)) if volt_label.startswith(k))
 is_lv = V in (400, 415)
 pf = sb.slider("Power Factor (cos φ)", 0.80, 1.00, 0.90, 0.01)
 include_tx = sb.checkbox("Include step-up transformer", value=not is_lv, key=f"tx_{V}")
 
-sb.header("4. Site & Installation")
+sb.header("6. Site & Installation")
 length = sb.number_input("Cable Distance to Point of Connection (m)", 10.0, 2000.0, 150.0, 10.0)
 ground = sb.selectbox("Civil Trenching Condition",
                       ["Soft Soil / Open Grass", "Mixed Ground / Hard Earth", "Existing Asphalt / Concrete Cutting"], index=1)
@@ -227,7 +250,7 @@ accuracy = sb.slider("Estimate accuracy range (±%)", 10, 40, 25, 5) / 100.0
 if sb.button("Reset edited rates/quantities"):
     st.session_state.pop("boq_editor", None)
 
-# ============================== ENGINEERING (Global Core + Regional Overlays) =
+# ============================== ENGINEERING (Calculated in USD Base) ===========
 current = kw * 1000 / (1.732 * V * pf)
 
 TX_SIZES = [250, 500, 750, 1000, 1500, 2000, 2500, 5000]
@@ -236,7 +259,6 @@ n_tx = max(1, math.ceil(req_kva / TX_SIZES[-1]))
 tx_kva = min(s for s in TX_SIZES if s >= req_kva / n_tx)
 tx_qty = n_tx if include_tx else 0
 
-# Cables scaled by Global Copper Master Index
 CABLES = {
     "LV": ("4-Core {} mm² Cu XLPE/SWA/PVC (LV)", [(120, 250, 65), (240, 360, 110), (300, 410, 140)]),
     11000: ("3-Core {} mm² Cu XLPE Armoured (11 kV)", [(95, 270, 110), (185, 380, 145), (300, 490, 210)]),
@@ -263,14 +285,12 @@ if is_lv:
     sw_name, sw_rate = "Main Switchboard (LV)", 8000 + 9 * rating
 else:
     sw_name, sw_rate = "Ring Main Unit / MV Switchgear", (15000 + 8 * rating) * (1.8 if V == 33000 else 1.0)
-# Equipment scaled by Global Steel Master Index + Regional Import Duties
 sw_rate *= steel_factor * duty
 
-# Civil trenching scaled by Regional In-Country Overlay
-trench_rate = profile["base_trench"][ground.split()[0]] * (1 + 0.3 * (runs - 1)) * profile["civil_trench_index"]
+base_trench_dict = {"Soft": trench_soft, "Mixed": trench_mixed, "Existing": trench_exist}
+trench_rate = base_trench_dict[ground.split()[0]] * (1 + 0.3 * (runs - 1))
 tx_rate = tx_kva * 42.0 * steel_factor * duty
 supply = tx_qty * tx_rate + sw_rate + length * runs * rate
-# Labor scaled by Regional In-Country Wage Overlay
 labour = max(5000.0, 0.12 * supply) * labor_idx
 protection = (7500.0 if is_lv else 14000.0) * duty
 aux_cost = (0.0 if is_lv else 3500.0) * duty
@@ -278,7 +298,7 @@ earthing, testing = 4500.0 * labor_idx, 9500.0 * labor_idx
 prelims = max(6000.0, 0.06 * (supply + length * trench_rate + labour + protection + aux_cost + earthing + testing))
 
 # ============================== BOQ DATA =====================================
-sig = (selected_region, V, kw, ground, fx, bypass)
+sig = (selected_region, V, kw, ground, curr_code, bypass, labor_idx, trench_soft, trench_mixed, trench_exist)
 if st.session_state.get("boq_sig") != sig:
     st.session_state.pop("boq_editor", None)
     st.session_state["boq_sig"] = sig
@@ -298,19 +318,18 @@ rows = [
     ("02.1.2", "Site Preliminaries (fencing, permits, supervision, temp power)", 1.0, "item", prelims),
 ]
 df = pd.DataFrame(rows, columns=["Ref", "Item Description", "Qty", "Unit", RATE])
-df[RATE] = df[RATE].astype(float) * fx_multiplier  # Currency conversion via global master FX
+# Convert all values from USD base into independent target presentation currency
+df[RATE] = df[RATE].astype(float) * fx_multiplier
 
 assumptions = [
-    ("Project Region", selected_region), ("Engine Mode", mode_label), ("Local Currency", profile["currency_name"]),
-    ("Global FX Rate", f"{fx:.3f}"), ("Global Copper Index", f"{copper_factor:.2f}x"),
+    ("Project Region", selected_region), ("Engine Mode", mode_label), ("Presentation Currency", selected_curr_label),
+    ("Live FX Rate Used", f"{fx_multiplier:.3f}"), ("Global Copper Index", f"{copper_factor:.2f}x"),
     ("Global Steel Index", f"{steel_factor:.2f}x"),
-    ("Regional Labor Multiplier", f"{labor_idx}x"),
-    ("Regional Civil Multiplier", f"{profile['civil_trench_index']}x"),
-    ("Regional Import Tariff", f"{duty}x"),
+    ("Manual UK Labor Multiplier", f"{labor_idx}x" if is_uk else "N/A"),
     ("Peak AC load (kW)", kw), ("Grid voltage", volt_label),
     ("Power factor", pf), ("Design current (A)", round(current, 1)), ("Trenching condition", ground),
     ("Scope exclusions", "PV/BESS equipment, utility fees, studies, SCADA, land"),
-    ("Status", f"Budget-stage estimate in {sym} via Global-Regional Architecture"),
+    ("Status", f"Budget-stage estimate displayed in {selected_curr_label}"),
 ]
 
 # ============================== TABS =========================================
@@ -325,7 +344,7 @@ with tab1:
         st.info(f"Load exceeds the largest single transformer: using {n_tx} × {tx_kva} kVA units.")
 
     st.subheader("⚙️ Editable Quantities & Unit Rates")
-    st.caption(f"Rates displayed in **{profile['currency_name']}**. Region: **{selected_region}** | Mode: **{mode_label}**.")
+    st.caption(f"Rates displayed in **{selected_curr_label}**. Region: **{selected_region}** | Mode: **{mode_label}**.")
     edited = st.data_editor(
         df, key="boq_editor", hide_index=True, use_container_width=True,
         disabled=["Ref", "Item Description", "Unit"],
@@ -347,7 +366,7 @@ with tab1:
     r1, r2 = st.columns(2)
     r1.metric(f"Low Estimate (-{accuracy:.0%})", f"{sym}{grand * (1 - accuracy):,.0f}")
     r2.metric(f"High Estimate (+{accuracy:.0%})", f"{sym}{grand * (1 + accuracy):,.0f}")
-    st.info(f"Region: **{selected_region}** | Currency: **{profile['currency_name']}** | Mode: **{mode_label}** | "
+    st.info(f"Region: **{selected_region}** | Currency: **{selected_curr_label}** | Mode: **{mode_label}** | "
             f"CapEx intensity: **{sym}{grand / kw:,.2f} per kW**.")
 
 with tab2:
@@ -358,24 +377,24 @@ with tab2:
     col_ex.download_button(
         "📊 Download Professional Excel (.xlsx)",
         data=build_excel(boq_out, assumptions, contingency, accuracy, sym),
-        file_name=f"CapEx_Estimate_{selected_region.replace(' ', '_')}_{int(kw)}kW.xlsx",
+        file_name=f"CapEx_Estimate_{curr_code}_{int(kw)}kW.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary", use_container_width=True,
     )
     col_pdf.download_button(
         "📄 Download Executive Summary (.pdf)",
-        data=create_pdf_summary(boq_out, subtotal, contingency, cont_amt, grand, kw, volt_label, selected_region, fx, sym, mode_label),
-        file_name=f"CapEx_Summary_{selected_region.replace(' ', '_')}_{int(kw)}kW.pdf",
+        data=create_pdf_summary(boq_out, subtotal, contingency, cont_amt, grand, kw, volt_label, selected_region, selected_curr_label, sym, mode_label),
+        file_name=f"CapEx_Summary_{curr_code}_{int(kw)}kW.pdf",
         mime="application/pdf", type="secondary", use_container_width=True,
     )
     st.markdown("---")
-    st.subheader("📋 Registered Regional & Market Audit Trail")
+    st.subheader("📋 Registered Regional & Currency Audit Trail")
     st.dataframe(pd.DataFrame(assumptions, columns=["Parameter / Regional Metric", "Current Value"]),
                  hide_index=True, use_container_width=True)
 
 with tab3:
     st.subheader("🤖 AI Engineering Co-Pilot")
-    st.caption("Ask questions about regional design standards, global market tracking, or cost structures.")
+    st.caption("Ask questions about currency conversions, multi-currency reporting, or design specs.")
 
     def get_secret(name):
         try:
@@ -391,9 +410,9 @@ with tab3:
 
     def build_context():
         return f"""You are an expert engineering assistant inside a solar/BESS CapEx tool.
-Region: {selected_region} | Currency: {profile['currency_name']} | Mode: {mode_label} | Global FX: {fx:.3f}
+Region: {selected_region} | Presentation Currency: {selected_curr_label} | Mode: {mode_label}
 Load: {kw:,.0f} kW | Voltage: {volt_label} | Grand Total: {sym}{grand:,.2f}
-Help the user understand their regional interconnection cost estimate, global market tracking, and design assumptions."""
+Help the user understand their multi-currency cost estimate, global market tracking, and design assumptions."""
 
     for m in st.session_state.chat:
         with st.chat_message(m["role"]):
@@ -405,7 +424,7 @@ Help the user understand their regional interconnection cost estimate, global ma
             st.markdown(prompt)
         with st.chat_message("assistant"):
             try:
-                history = "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in st.session_state.chat[-4:])
+                history = "\n".join(f"{m['role'].capitalize()}: {m['content']}" for m in st.session_state.chat[-4:]])
                 stream = genai.Client(api_key=GEMINI_KEY).models.generate_content_stream(
                     model=GEMINI_MODEL, contents=f"{build_context()}\n\nRecent Conversation:\n{history}")
                 reply = st.write_stream(chunk.text for chunk in stream if chunk.text)
