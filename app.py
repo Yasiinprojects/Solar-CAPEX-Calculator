@@ -7,6 +7,80 @@ from google import genai
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
+# --- PDF Generation Imports ---
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+
+
+def create_pdf_summary(df_boq, subtotal_val, cont_pct, cont_val, grand_val, kw_val, volt_label_val):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36
+    )
+    story = []
+
+    # Styles
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'TitleStyle',
+        parent=styles['Heading1'],
+        fontSize=18,
+        textColor=colors.HexColor('#1F3864'),
+        spaceAfter=6,
+    )
+    subtitle_style = ParagraphStyle(
+        'SubtitleStyle',
+        parent=styles['Normal'],
+        fontSize=10,
+        textColor=colors.HexColor('#555555'),
+        spaceAfter=15,
+    )
+
+    # Title & Header Metadata
+    story.append(Paragraph("⚡ Solar & BESS CapEx Executive Summary", title_style))
+    story.append(Paragraph(f"System Load: {kw_val:,.0f} kW | Grid Voltage: {volt_label_val}", subtitle_style))
+    story.append(Spacer(1, 10))
+
+    # Table Header & Data
+    data = [["Ref", "Item Description", "Qty", "Unit", "Rate (USD)", "Total (USD)"]]
+    for r in df_boq.itertuples(index=False):
+        qty_str = f"{r[2]:,.1f}"
+        rate_str = f"${r[4]:,.2f}"
+        total_str = f"${(r[2] * r[4]):,.2f}"
+        data.append([str(r[0]), str(r[1]), qty_str, str(r[3]), rate_str, total_str])
+
+    # Summary Totals Rows
+    data.append(["", "", "", "", "Subtotal", f"${subtotal_val:,.2f}"])
+    data.append(["", "", "", "", f"Contingency ({cont_pct:.0%})", f"${cont_val:,.2f}"])
+    data.append(["", "", "", "", "GRAND TOTAL", f"${grand_val:,.2f}"])
+
+    # Build Table
+    t = Table(data, colWidths=[45, 230, 45, 35, 80, 85])
+    t.setStyle(
+        TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1F3864')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('ALIGN', (2, 0), (2, -1), 'RIGHT'),
+            ('ALIGN', (4, 0), (-1, -1), 'RIGHT'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ('TOPPADDING', (0, 0), (-1, -1), 4),
+            ('GRID', (0, 0), (-1, -4), 0.5, colors.HexColor('#DDDDDD')),
+            ('FONTNAME', (4, -3), (-1, -1), 'Helvetica-Bold'),
+            ('BACKGROUND', (4, -1), (-1, -1), colors.HexColor('#EBF1F5')),
+        ])
+    )
+
+    story.append(t)
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 st.set_page_config(page_title="Solar & BESS CapEx Engine", page_icon="⚡", layout="wide")
 st.title("⚡ Solar & BESS Interconnection CapEx Engine")
 st.caption(
@@ -167,8 +241,8 @@ with tab1:
     )
 
 with tab2:
-    st.subheader("📥 Excel Export")
-    st.caption("Download your finalized estimate as a fully formatted professional workbook with live formulas and an assumptions audit trail.")
+    st.subheader("📥 Export Reports")
+    st.caption("Download your finalized estimate as an Excel workbook or a PDF executive summary.")
 
     def build_excel(df_boq, inputs, cont_pct, acc):
         wb = Workbook()
@@ -213,13 +287,31 @@ with tab2:
         wb.save(buf)
         return buf.getvalue()
 
-    st.download_button(
-        "Download Professional Excel (.xlsx)",
-        data=build_excel(edited[["Ref", "Item Description", "Qty", "Unit", "Unit Rate (USD)"]], assumptions, contingency, accuracy),
-        file_name=f"CapEx_Estimate_{int(kw)}kW.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary",
-    )
+    col_ex, col_pdf = st.columns(2)
+
+    with col_ex:
+        st.download_button(
+            "📊 Download Professional Excel (.xlsx)",
+            data=build_excel(edited[["Ref", "Item Description", "Qty", "Unit", "Unit Rate (USD)"]], assumptions, contingency, accuracy),
+            file_name=f"CapEx_Estimate_{int(kw)}kW.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary",
+            use_container_width=True,
+        )
+
+    with col_pdf:
+        pdf_bytes = create_pdf_summary(
+            edited[["Ref", "Item Description", "Qty", "Unit", "Unit Rate (USD)"]],
+            subtotal, contingency, cont_amt, grand, kw, volt_label
+        )
+        st.download_button(
+            "📄 Download Executive Summary (.pdf)",
+            data=pdf_bytes,
+            file_name=f"CapEx_Summary_{int(kw)}kW.pdf",
+            mime="application/pdf",
+            type="secondary",
+            use_container_width=True,
+        )
 
     st.markdown("---")
     st.subheader("📋 Registered Assumptions Audit Trail")
