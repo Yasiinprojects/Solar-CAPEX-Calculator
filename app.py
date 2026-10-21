@@ -14,7 +14,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
 
-def create_pdf_summary(df_boq, subtotal_val, cont_pct, cont_val, grand_val, kw_val, volt_label_val):
+def create_pdf_summary(df_boq, subtotal_val, cont_pct, cont_val, grand_val, kw_val, volt_label_val, region_val):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36
@@ -40,7 +40,7 @@ def create_pdf_summary(df_boq, subtotal_val, cont_pct, cont_val, grand_val, kw_v
 
     # Title & Header Metadata
     story.append(Paragraph("⚡ Solar & BESS CapEx Executive Summary", title_style))
-    story.append(Paragraph(f"System Load: {kw_val:,.0f} kW | Grid Voltage: {volt_label_val}", subtitle_style))
+    story.append(Paragraph(f"Region: {region_val} | System Load: {kw_val:,.0f} kW | Grid Voltage: {volt_label_val}", subtitle_style))
     story.append(Spacer(1, 10))
 
     # Table Header & Data
@@ -91,24 +91,53 @@ st.markdown("---")
 
 # ============================== INPUTS =======================================
 sb = st.sidebar
-sb.header("1. System & Grid")
-kw = sb.number_input("Peak AC System Load (kW)", 50.0, 10000.0, 500.0, 50.0)
-volt_label = sb.selectbox(
-    "Grid Interconnection Voltage",
-    ["0.415 kV (Low Voltage)", "11 kV (Medium Voltage)", "33 kV (Medium Voltage)"],
-    index=1,
+
+sb.header("1. Market & Region")
+selected_region = sb.selectbox(
+    "Project Region",
+    ["United Kingdom (UK)", "Global Baseline (1.0x)"],
+    index=0
 )
-V = {"0.415": 415, "11 kV": 11000, "33 kV": 33000}[
-    next(k for k in ("0.415", "11 kV", "33 kV") if volt_label.startswith(k))
+
+# Market Profile Definitions
+MARKET_PROFILES = {
+    "United Kingdom (UK)": {
+        "labor_index": 1.35,        # Certified JIB / HV SAP labor rates
+        "civil_trench_index": 1.45, # NRSWA streetworks compliance & trenching
+        "import_duty_index": 1.03,  # Post-Brexit logistics & UKCA/CE compliance
+        "voltages": ["0.400 kV (Low Voltage)", "11 kV (Medium Voltage)", "33 kV (Medium Voltage)"],
+        "base_trench": {"Soft": 45.0, "Mixed": 75.0, "Existing": 125.0}
+    },
+    "Global Baseline (1.0x)": {
+        "labor_index": 1.00,
+        "civil_trench_index": 1.00,
+        "import_duty_index": 1.00,
+        "voltages": ["0.415 kV (Low Voltage)", "11 kV (Medium Voltage)", "33 kV (Medium Voltage)"],
+        "base_trench": {"Soft": 35.0, "Mixed": 55.0, "Existing": 95.0}
+    }
+}
+current_profile = MARKET_PROFILES[selected_region]
+
+sb.header("2. Macro-Market Adjustments")
+copper_index = sb.slider("Global Copper Index (Cabling)", 0.80, 1.50, 1.05, 0.01, help="Scales cable conductor supply costs.")
+steel_index = sb.slider("Global Steel Index (Transformers/Switchgear)", 0.80, 1.50, 1.02, 0.01, help="Scales core steel and transformer costs.")
+local_inflation = sb.slider("Local Wage & Civil Inflation", 0.90, 1.50, 1.00, 0.01, help="Scales local labor and trenching costs.")
+
+sb.header("3. System & Grid")
+kw = sb.number_input("Peak AC System Load (kW)", 50.0, 10000.0, 500.0, 50.0)
+volt_label = sb.selectbox("Grid Interconnection Voltage", current_profile["voltages"], index=1)
+
+V = {"0.400": 400, "0.415": 415, "11 kV": 11000, "33 kV": 33000}[
+    next(k for k in ("0.400", "0.415", "11 kV", "33 kV") if volt_label.startswith(k))
 ]
-is_lv = V == 415
+is_lv = V in (400, 415)
 pf = sb.slider("Power Factor (cos φ)", 0.80, 1.00, 0.90, 0.01)
 include_tx = sb.checkbox(
     "Include step-up transformer", value=not is_lv, key=f"tx_{V}",
     help="LV connections normally need no step-up transformer.",
 )
 
-sb.header("2. Site & Installation")
+sb.header("4. Site & Installation")
 length = sb.number_input("Cable Distance to Point of Connection (m)", 10.0, 2000.0, 150.0, 10.0)
 ground = sb.selectbox(
     "Civil Trenching Condition",
@@ -129,10 +158,12 @@ n_tx = max(1, math.ceil(req_kva / TX_SIZES[-1]))
 tx_kva = min(s for s in TX_SIZES if s >= req_kva / n_tx)
 tx_qty = n_tx if include_tx else 0
 
+# Base cable rates scaled by Global Copper Index
 CABLES = {
-    415: ("4-Core {} mm² Cu XLPE/SWA/PVC (LV)", [(120, 250, 65), (240, 360, 110), (300, 410, 140)]),
-    11000: ("3-Core {} mm² Cu XLPE Armoured (11 kV)", [(95, 270, 110), (185, 380, 145), (300, 490, 210)]),
-    33000: ("3-Core {} mm² Cu XLPE Armoured (33 kV)", [(95, 250, 180), (185, 340, 230), (300, 430, 320)]),
+    400: ("4-Core {} mm² Cu XLPE/SWA/PVC (LV)", [(120, 250, 65 * copper_index), (240, 360, 110 * copper_index), (300, 410, 140 * copper_index)]),
+    415: ("4-Core {} mm² Cu XLPE/SWA/PVC (LV)", [(120, 250, 65 * copper_index), (240, 360, 110 * copper_index), (300, 410, 140 * copper_index)]),
+    11000: ("3-Core {} mm² Cu XLPE Armoured (11 kV)", [(95, 270, 110 * copper_index), (185, 380, 145 * copper_index), (300, 490, 210 * copper_index)]),
+    33000: ("3-Core {} mm² Cu XLPE Armoured (33 kV)", [(95, 250, 180 * copper_index), (185, 340, 230 * copper_index), (300, 430, 320 * copper_index)]),
 }
 DERATE = 0.85
 tmpl, options = CABLES[V]
@@ -148,48 +179,65 @@ cable_desc = tmpl.format(size) + (f", {runs} parallel runs" if runs > 1 else "")
 RATINGS = [630, 1250, 2000, 2500, 3200, 4000]
 need_a = current * 1.25
 rating = next((r for r in RATINGS if r >= need_a), RATINGS[-1])
-fault_ka = {415: 50, 11000: 25, 33000: 31.5}[V]
+fault_ka = {400: 50, 415: 50, 11000: 25, 33000: 31.5}[V]
+
+# Switchgear scaled by Steel Index & Regional Duties
 if is_lv:
-    sw_name, sw_rate = "Main Switchboard (LV)", 8000 + 9 * rating
+    sw_name, sw_rate = "Main Switchboard (LV)", (8000 + 9 * rating) * steel_index * current_profile["import_duty_index"]
 else:
     sw_name = "Ring Main Unit / MV Switchgear"
-    sw_rate = (15000 + 8 * rating) * (1.8 if V == 33000 else 1.0)
+    sw_rate = (15000 + 8 * rating) * (1.8 if V == 33000 else 1.0) * steel_index * current_profile["import_duty_index"]
 
-trench_rate = {"Soft": 35.0, "Mixed": 55.0, "Existing": 95.0}[ground.split()[0]]
-trench_rate *= 1 + 0.3 * (runs - 1)
+# Civil Trenching scaled by Regional Index & Local Wage Inflation
+ground_key = ground.split()[0]
+base_trench_rate = current_profile["base_trench"][ground_key]
+trench_rate = base_trench_rate * (1 + 0.3 * (runs - 1)) * current_profile["civil_trench_index"] * local_inflation
 
-tx_rate = tx_kva * 42.0
+# Transformers scaled by Steel Index & Regional Duties
+tx_rate = tx_kva * 42.0 * steel_index * current_profile["import_duty_index"]
+
+# Equipment Supply Subtotal
 supply = tx_qty * tx_rate + sw_rate + length * runs * rate
-labour = max(5000.0, 0.12 * supply)
-protection = 7500.0 if is_lv else 14000.0
-aux_cost = 0.0 if is_lv else 3500.0
-earthing, testing = 4500.0, 9500.0
+
+# Labor scaled by Regional Labor Index & Local Wage Inflation
+labour = max(5000.0, 0.12 * supply) * current_profile["labor_index"] * local_inflation
+
+protection = (7500.0 if is_lv else 14000.0) * current_profile["import_duty_index"]
+aux_cost = (0.0 if is_lv else 3500.0) * current_profile["import_duty_index"]
+earthing, testing = 4500.0 * current_profile["labor_index"], 9500.0 * current_profile["labor_index"]
 prelims = max(6000.0, 0.06 * (supply + length * trench_rate + labour + protection + aux_cost + earthing + testing))
 
 # ============================== BOQ DATA =====================================
-sig = (V, kw, ground)
+sig = (selected_region, V, kw, ground, copper_index, steel_index, local_inflation)
 if st.session_state.get("boq_sig") != sig:
     st.session_state.pop("boq_editor", None)
     st.session_state["boq_sig"] = sig
 
 rows = [
-    ("21.1.1", f"Step-Up Transformer ({tx_kva} kVA, Oil-Immersed)" + ("" if include_tx else " (excluded)"), float(tx_qty), "nr", tx_rate),
+    ("21.1.1", f"Step-Up Transformer ({tx_kva} kVA, Oil-Immersed)" + ("" if include_tx else " (excluded)"), float(tx_qty), "nr", float(tx_rate)),
     ("21.2.4", f"{sw_name}, {rating} A, {fault_ka:g} kA assumed fault level", 1.0, "nr", float(sw_rate)),
     ("21.5.2", f"Interconnection Cabling: {cable_desc}", float(length * runs), "m", float(rate)),
-    ("14.2.1", f"Civils: trench, bedding, backfill, warning tape ({ground})", float(length), "m", trench_rate),
-    ("21.6.1", "Protection Relays & Revenue Metering", 1.0, "item", protection),
+    ("14.2.1", f"Civils: trench, bedding, backfill, warning tape ({ground})", float(length), "m", float(trench_rate)),
+    ("21.6.1", "Protection Relays & Revenue Metering (DNO compliant)", 1.0, "item", float(protection)),
     ("21.6.3", "Substation Auxiliary DC Tripping Supply & Battery Charger" + (" (n/a at LV)" if is_lv else ""),
-     0.0 if is_lv else 1.0, "item", 3500.0),
-    ("21.7.1", "Earthing System & Bonding", 1.0, "item", earthing),
+     0.0 if is_lv else 1.0, "item", float(aux_cost)),
+    ("21.7.1", "Earthing System & Bonding", 1.0, "item", float(earthing)),
     ("21.9.3", "M&E Installation Labour (rigging, termination, glanding)", 1.0, "item", float(labour)),
-    ("21.9.8", "Protection Testing, Relay Calibration & Commissioning", 1.0, "item", testing),
+    ("21.9.8", "Protection Testing, Relay Calibration & Commissioning", 1.0, "item", float(testing)),
     ("02.1.2", "Site Preliminaries (fencing, permits, supervision, temp power)", 1.0, "item", float(prelims)),
 ]
 df = pd.DataFrame(rows, columns=["Ref", "Item Description", "Qty", "Unit", "Unit Rate (USD)"])
 
 assumptions = [
-    ("Peak AC load (kW)", kw), ("Grid voltage", volt_label), ("Power factor", pf),
-    ("Design current (A)", round(current, 1)), ("Cable derating factor", DERATE),
+    ("Project Region", selected_region),
+    ("Global Copper Index", f"{copper_index:.2f}x"),
+    ("Global Steel Index", f"{steel_index:.2f}x"),
+    ("Local Inflation Index", f"{local_inflation:.2f}x"),
+    ("Peak AC load (kW)", kw), 
+    ("Grid voltage", volt_label), 
+    ("Power factor", pf),
+    ("Design current (A)", round(current, 1)), 
+    ("Cable derating factor", DERATE),
     ("Switchgear sizing", "1.25 × design current, next standard rating"),
     ("Assumed fault level (kA)", f"{fault_ka:g} (confirm with utility)"),
     ("Trenching condition", ground),
@@ -202,14 +250,14 @@ tab1, tab2, tab3 = st.tabs(["⚡ CapEx Calculator & BOQ", "📥 Export & Assumpt
 
 with tab1:
     if is_lv and (runs > 2 or kw > 1000):
-        st.warning("Load is high for a 415 V connection. Check whether an MV connection is more realistic.")
+        st.warning("Load is high for a Low Voltage connection. Check whether an MV connection is more realistic.")
     if need_a > RATINGS[-1]:
         st.warning(f"Required switchgear current ({need_a:,.0f} A) exceeds the largest standard rating listed.")
     if n_tx > 1 and include_tx:
         st.info(f"Load exceeds the largest single transformer: using {n_tx} × {tx_kva} kVA units.")
 
     st.subheader("⚙️ Editable Quantities & Unit Rates")
-    st.caption("Edit Qty or Unit Rate. Edits reset when load, voltage or trenching condition changes; use the sidebar button to reset manually.")
+    st.caption("Edit Qty or Unit Rate. Edits reset when market parameters change; use the sidebar button to reset manually.")
     
     edited = st.data_editor(
         df, key="boq_editor", hide_index=True, use_container_width=True,
@@ -235,9 +283,8 @@ with tab1:
     r2.metric(f"High Estimate (+{accuracy:.0%})", f"${grand*(1+accuracy):,.0f}")
 
     st.info(
-        f"Contingency: **${cont_amt:,.2f}** ({contingency:.0%}). "
-        f"CapEx intensity: **${grand / kw:,.2f} per kW**. Covers the grid-connection scope only "
-        "(excludes PV/BESS equipment, utility connection fees, studies and SCADA)."
+        f"Region: **{selected_region}** | Contingency: **${cont_amt:,.2f}** ({contingency:.0%}). "
+        f"CapEx intensity: **${grand / kw:,.2f} per kW**. Covers grid-connection scope only."
     )
 
 with tab2:
@@ -277,7 +324,7 @@ with tab2:
         wa = wb.create_sheet("Assumptions")
         wa.append(["Input / Assumption", "Value"])
         for k, v in inputs:
-            wa.append([k, v])
+            wa.append([k, str(v)])
         wa.column_dimensions["A"].width = 38
         wa.column_dimensions["B"].width = 70
         for c in wa[1]:
@@ -293,7 +340,7 @@ with tab2:
         st.download_button(
             "📊 Download Professional Excel (.xlsx)",
             data=build_excel(edited[["Ref", "Item Description", "Qty", "Unit", "Unit Rate (USD)"]], assumptions, contingency, accuracy),
-            file_name=f"CapEx_Estimate_{int(kw)}kW.xlsx",
+            file_name=f"CapEx_Estimate_{selected_region.replace(' ', '_')}_{int(kw)}kW.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
             use_container_width=True,
@@ -302,12 +349,12 @@ with tab2:
     with col_pdf:
         pdf_bytes = create_pdf_summary(
             edited[["Ref", "Item Description", "Qty", "Unit", "Unit Rate (USD)"]],
-            subtotal, contingency, cont_amt, grand, kw, volt_label
+            subtotal, contingency, cont_amt, grand, kw, volt_label, selected_region
         )
         st.download_button(
             "📄 Download Executive Summary (.pdf)",
             data=pdf_bytes,
-            file_name=f"CapEx_Summary_{int(kw)}kW.pdf",
+            file_name=f"CapEx_Summary_{selected_region.replace(' ', '_')}_{int(kw)}kW.pdf",
             mime="application/pdf",
             type="secondary",
             use_container_width=True,
@@ -320,7 +367,7 @@ with tab2:
 
 with tab3:
     st.subheader("🤖 AI Engineering Co-Pilot")
-    st.caption("Ask questions about why specific line items were generated, what design assumptions mean, or what to verify with grid operators.")
+    st.caption("Ask questions about why specific line items were generated, what UK/DNO design assumptions mean, or what to verify with grid operators.")
 
     def get_secret(name):
         try:
@@ -342,8 +389,9 @@ with tab3:
         subtotal_str = f"USD {subtotal:,.2f}"
         grand_str = f"USD {grand:,.2f}"
         return f"""You are an expert engineering assistant inside a solar/BESS CapEx tool.
-Load: {kw:,.0f} kW | Voltage: {volt_label}
+Region: {selected_region} | Load: {kw:,.0f} kW | Voltage: {volt_label}
 Subtotal: {subtotal_str} | Grand Total: {grand_str}
+Market Parameters: Copper Index = {copper_index:.2f}x, Steel Index = {steel_index:.2f}x, Local Inflation = {local_inflation:.2f}x
 Help the user understand their grid interconnection cost estimate, transformer sizing, cabling, and design assumptions."""
 
     for m in st.session_state.chat:
