@@ -230,6 +230,9 @@ def create_pdf_summary(df_boq, subtotal_val, cont_pct, cont_val, grand_val, kw_v
     styles = getSampleStyleSheet()
     title = ParagraphStyle("TitleStyle", parent=styles["Heading1"], fontSize=18, textColor=colors.HexColor("#1F3864"), spaceAfter=6)
     sub = ParagraphStyle("SubtitleStyle", parent=styles["Normal"], fontSize=10, textColor=colors.HexColor("#555555"), spaceAfter=15)
+    
+    # Make sure this definition is here:
+    disclaimer_style = ParagraphStyle("DisclaimerStyle", parent=styles["Normal"], fontSize=7, textColor=colors.HexColor("#777777"), spaceBefore=15)
 
     data = [["Ref", "Item Description", "Qty", "Unit", f"Rate ({sym})", f"Total ({sym})"]]
     data += [[str(r[0]), str(r[1]), f"{r[2]:,.1f}", str(r[3]), f"{sym}{r[4]:,.2f}", f"{sym}{r[2] * r[4]:,.2f}"]
@@ -252,13 +255,13 @@ def create_pdf_summary(df_boq, subtotal_val, cont_pct, cont_val, grand_val, kw_v
         ("FONTNAME", (4, -3), (-1, -1), "Helvetica-Bold"),
         ("BACKGROUND", (4, -1), (-1, -1), colors.HexColor("#EBF1F5")),
     ]))
+    
     doc.build([
         Paragraph(f"⚡ Solar & BESS CapEx Executive Summary ({region_val})", title),
         Paragraph(f"Mode: {mode_label} | Currency: {curr_name} | Load: {kw_val:,.0f} kW | Voltage: {volt_label_val}", sub),
         Spacer(1, 10),
         t,
         Spacer(1, 15),
-        # NEW: Added disclaimer at the very bottom of the PDF build story
         Paragraph("<b>Commercial Disclaimer:</b> This document is generated for indicative budgeting and preliminary feasibility analysis only. It does not constitute a binding EPC quotation, DNO grid connection offer, or commercial contract. All unit rates and market indices are subject to formal site survey and engineering verification.", disclaimer_style)
     ])
     return buffer.getvalue()
