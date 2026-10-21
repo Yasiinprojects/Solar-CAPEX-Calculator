@@ -1,5 +1,6 @@
 import io
 import math
+import sqlite3
 import pandas as pd
 import requests
 import streamlit as st
@@ -12,6 +13,81 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 st.set_page_config(page_title="Solar & BESS CapEx Engine", page_icon="⚡", layout="wide")
+
+
+# ============================== DATABASE INITIALIZATION ======================
+def init_db():
+    conn = sqlite3.connect("capex_projects.db", check_same_thread=False)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS projects (
+            name TEXT PRIMARY KEY,
+            region TEXT,
+            currency TEXT,
+            kw REAL,
+            voltage TEXT,
+            length REAL,
+            ground TEXT,
+            contingency REAL,
+            accuracy REAL,
+            include_tx INTEGER,
+            bypass INTEGER,
+            labor_idx REAL,
+            trench_soft REAL,
+            trench_mixed REAL,
+            trench_exist REAL
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def save_project_to_db(name, data):
+    conn = sqlite3.connect("capex_projects.db", check_same_thread=False)
+    c = conn.cursor()
+    c.execute('''
+        INSERT OR REPLACE INTO projects 
+        (name, region, currency, kw, voltage, length, ground, contingency, accuracy, include_tx, bypass, labor_idx, trench_soft, trench_mixed, trench_exist)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        name, data["region"], data["currency"], data["kw"], data["voltage"], 
+        data["length"], data["ground"], data["contingency"], data["accuracy"], 
+        int(data["include_tx"]), int(data["bypass"]), data["labor_idx"], 
+        data["trench_soft"], data["trench_mixed"], data["trench_exist"]
+    ))
+    conn.commit()
+    conn.close()
+
+def load_project_from_db(name):
+    conn = sqlite3.connect("capex_projects.db", check_same_thread=False)
+    c = conn.cursor()
+    c.execute('SELECT * FROM projects WHERE name = ?', (name,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return {
+            "region": row[1], "currency": row[2], "kw": row[3], "voltage": row[4],
+            "length": row[5], "ground": row[6], "contingency": row[7], "accuracy": row[8],
+            "include_tx": bool(row[9]), "bypass": bool(row[10]), "labor_idx": row[11],
+            "trench_soft": row[12], "trench_mixed": row[13], "trench_exist": row[14]
+        }
+    return None
+
+def get_all_project_names():
+    conn = sqlite3.connect("capex_projects.db", check_same_thread=False)
+    c = conn.cursor()
+    c.execute('SELECT name FROM projects')
+    rows = c.fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+def delete_project_from_db(name):
+    conn = sqlite3.connect("capex_projects.db", check_same_thread=False)
+    c = conn.cursor()
+    c.execute('DELETE FROM projects WHERE name = ?', (name,))
+    conn.commit()
+    conn.close()
 
 
 # ============================== GLOBAL MASTER MARKET TRACKER ==================
@@ -34,14 +110,12 @@ def to_index(price, base, share):
 
 @st.cache_data(ttl=1800)  # Caches live market data for 30 minutes
 def get_global_market_data():
-    """Fetches live multi-currency rates relative to USD and global commodity benchmarks."""
     d = {
         "rates": {"USD": 1.0, "GBP": 0.78, "EUR": 0.92, "CNY": 7.20, "MYR": 4.70},
         "copper_index": 1.05, "steel_index": 1.02, "copper_price": None, "steel_price": None,
         "fx_live": False, "copper_live": False, "steel_live": False
     }
     try:
-        # Fetch rates based on USD base for universal cross-currency conversion
         r = requests.get("https://open.er-api.com/v6/latest/USD", timeout=5)
         if r.status_code == 200:
             data_rates = r.json().get("rates", {})
@@ -151,11 +225,44 @@ def build_excel(df_boq, inputs, cont_pct, acc, sym):
 
 
 st.title("⚡ Solar & BESS Interconnection CapEx Engine")
-st.caption("Global Master Tracker with Independent Multi-Currency Conversion & Manual UK Cost Controls.")
+st.caption("Global Master Tracker with Database Persistence, Multi-Currency Conversion & Manual UK Cost Controls.")
 st.markdown("---")
 
 # ============================== SIDEBAR CONTROLS =============================
 sb = st.sidebar
+
+# --- PROJECT SAVE / LOAD MANAGER ---
+sb.header("💾 Project Vault (Database)")
+saved_projects = get_all_project_names()
+selected_saved_proj = sb.selectbox("Load Saved Project", ["-- Select Project --"] + saved_projects)
+
+if selected_saved_proj != "-- Select Project --":
+    if sb.button("📂 Load Project"):
+        p_data = load_project_from_db(selected_saved_proj)
+        if p_data:
+            st.session_state["load_region"] = p_data["region"]
+            st.session_state["load_currency"] = p_data["currency"]
+            st.session_state["load_kw"] = p_data["kw"]
+            st.session_state["load_voltage"] = p_data["voltage"]
+            st.session_state["load_length"] = p_data["length"]
+            st.session_state["load_ground"] = p_data["ground"]
+            st.session_state["load_cont"] = p_data["contingency"]
+            st.session_state["load_acc"] = p_data["accuracy"]
+            st.session_state["load_tx"] = p_data["include_tx"]
+            st.session_state["load_bypass"] = p_data["bypass"]
+            st.session_state["load_labor"] = p_data["labor_idx"]
+            st.session_state["load_t_soft"] = p_data["trench_soft"]
+            st.session_state["load_t_mixed"] = p_data["trench_mixed"]
+            st.session_state["load_t_exist"] = p_data["trench_exist"]
+            st.success(f"Loaded '{selected_saved_proj}' successfully!")
+            st.rerun()
+
+    if sb.button("🗑️ Delete Project", type="secondary"):
+        delete_project_from_db(selected_saved_proj)
+        st.success(f"Deleted '{selected_saved_proj}'.")
+        st.rerun()
+
+sb.markdown("---")
 
 sb.header("1. Presentation Currency")
 currency_options = {
@@ -165,17 +272,31 @@ currency_options = {
     "Chinese Yuan (¥)": {"code": "CNY", "sym": "¥"},
     "Malaysian Ringgit (RM)": {"code": "MYR", "sym": "RM"}
 }
-selected_curr_label = sb.selectbox("Display Estimate In", list(currency_options.keys()), index=0)
+default_curr_idx = 0
+curr_keys = list(currency_options.keys())
+if "load_currency" in st.session_state:
+    for idx, label in enumerate(curr_keys):
+        if currency_options[label]["code"] == st.session_state["load_currency"]:
+            default_curr_idx = idx
+            break
+
+selected_curr_label = sb.selectbox("Display Estimate In", curr_keys, index=default_curr_idx)
 curr_info = currency_options[selected_curr_label]
 curr_code, sym = curr_info["code"], curr_info["sym"]
 
 sb.header("2. Regional Market Selection")
-selected_region = sb.selectbox("Project Region & Market Profile", ["United Kingdom (UK)", "Global Baseline (USD)"], index=0)
+regions = ["United Kingdom (UK)", "Global Baseline (USD)"]
+default_reg_idx = 0
+if "load_region" in st.session_state and st.session_state["load_region"] in regions:
+    default_reg_idx = regions.index(st.session_state["load_region"])
+
+selected_region = sb.selectbox("Project Region & Market Profile", regions, index=default_reg_idx)
 is_uk = selected_region == "United Kingdom (UK)"
 
 sb.header("3. Global Master Pricing Mode")
+default_bypass = st.session_state.get("load_bypass", False)
 bypass = sb.checkbox(
-    "🔓 Manual Rate Mode (Bypass Global Tracker)", value=False,
+    "🔓 Manual Rate Mode (Bypass Global Tracker)", value=default_bypass,
     help="Disables live global commodity indexing and FX scaling to allow direct manual overrides.",
 )
 
@@ -185,7 +306,6 @@ if bypass:
     mode_label, status_color, status_text = "Manual Rate Mode (Global Tracker Bypassed)", "#D97706", "MANUAL OVERRIDE ACTIVE"
 else:
     copper_factor, steel_factor = live_market["copper_index"], live_market["steel_index"]
-    # Convert from base USD engine into selected presentation currency using live rates
     usd_to_target_rate = live_market["rates"].get(curr_code, 1.0)
     fx_multiplier = usd_to_target_rate
     fallbacks = [n for n, k in (("FX", "fx_live"), ("copper", "copper_live"), ("steel", "steel_live")) if not live_market[k]]
@@ -216,13 +336,12 @@ sb.markdown(
 if is_uk:
     sb.header("4. UK Local In-Country Cost Controls")
     sb.caption("Enter proprietary UK labor rates, civil trenching norms, and compliance overheads (Base: GBP).")
-    labor_idx = sb.number_input("UK M&E Labor Multiplier / Index", 0.80, 2.50, 1.35, 0.05)
-    trench_soft = sb.number_input("Trenching Rate - Soft Ground (£/m)", 20.0, 150.0, 45.0, 5.0)
-    trench_mixed = sb.number_input("Trenching Rate - Mixed Ground (£/m)", 40.0, 250.0, 75.0, 5.0)
-    trench_exist = sb.number_input("Trenching Rate - Existing Asphalt (£/m)", 60.0, 400.0, 125.0, 5.0)
+    labor_idx = sb.number_input("UK M&E Labor Multiplier / Index", 0.80, 2.50, st.session_state.get("load_labor", 1.35), 0.05)
+    trench_soft = sb.number_input("Trenching Rate - Soft Ground (£/m)", 20.0, 150.0, st.session_state.get("load_t_soft", 45.0), 5.0)
+    trench_mixed = sb.number_input("Trenching Rate - Mixed Ground (£/m)", 40.0, 250.0, st.session_state.get("load_t_mixed", 75.0), 5.0)
+    trench_exist = sb.number_input("Trenching Rate - Existing Asphalt (£/m)", 60.0, 400.0, st.session_state.get("load_t_exist", 125.0), 5.0)
     duty = sb.number_input("UKCA & Import Compliance Factor", 1.00, 1.20, 1.03, 0.01)
     voltages = ["0.400 kV (Low Voltage)", "11 kV (Medium Voltage)", "33 kV (Medium Voltage)"]
-    # Because UK manual inputs are natively in GBP, normalize them to USD base if presentation currency is different
     gbp_to_usd = 1.0 / live_market["rates"].get("GBP", 0.78)
     trench_soft *= gbp_to_usd
     trench_mixed *= gbp_to_usd
@@ -234,23 +353,33 @@ else:
     voltages = ["0.415 kV (Low Voltage)", "11 kV (Medium Voltage)", "33 kV (Medium Voltage)"]
 
 sb.header("5. System & Grid Setup")
-kw = sb.number_input("Peak AC System Load (kW)", 50.0, 10000.0, 500.0, 50.0)
-volt_label = sb.selectbox("Grid Interconnection Voltage", voltages, index=1)
+kw = sb.number_input("Peak AC System Load (kW)", 50.0, 10000.0, st.session_state.get("load_kw", 500.0), 50.0)
+
+default_volt_idx = 1
+if "load_voltage" in st.session_state and st.session_state["load_voltage"] in voltages:
+    default_volt_idx = voltages.index(st.session_state["load_voltage"])
+
+volt_label = sb.selectbox("Grid Interconnection Voltage", voltages, index=default_volt_idx)
 V = next(v for k, v in (("0.400", 400), ("0.415", 415), ("11 kV", 11000), ("33 kV", 33000)) if volt_label.startswith(k))
 is_lv = V in (400, 415)
 pf = sb.slider("Power Factor (cos φ)", 0.80, 1.00, 0.90, 0.01)
-include_tx = sb.checkbox("Include step-up transformer", value=not is_lv, key=f"tx_{V}")
+include_tx = sb.checkbox("Include step-up transformer", value=st.session_state.get("load_tx", not is_lv), key=f"tx_{V}")
 
 sb.header("6. Site & Installation")
-length = sb.number_input("Cable Distance to Point of Connection (m)", 10.0, 2000.0, 150.0, 10.0)
-ground = sb.selectbox("Civil Trenching Condition",
-                      ["Soft Soil / Open Grass", "Mixed Ground / Hard Earth", "Existing Asphalt / Concrete Cutting"], index=1)
-contingency = sb.slider("Commercial Contingency (%)", 0, 20, 10, 1) / 100.0
-accuracy = sb.slider("Estimate accuracy range (±%)", 10, 40, 25, 5) / 100.0
+length = sb.number_input("Cable Distance to Point of Connection (m)", 10.0, 2000.0, st.session_state.get("load_length", 150.0), 10.0)
+
+grounds = ["Soft Soil / Open Grass", "Mixed Ground / Hard Earth", "Existing Asphalt / Concrete Cutting"]
+default_ground_idx = 1
+if "load_ground" in st.session_state and st.session_state["load_ground"] in grounds:
+    default_ground_idx = grounds.index(st.session_state["load_ground"])
+
+ground = sb.selectbox("Civil Trenching Condition", grounds, index=default_ground_idx)
+contingency = sb.slider("Commercial Contingency (%)", 0, 20, int(st.session_state.get("load_cont", 0.10) * 100), 1) / 100.0
+accuracy = sb.slider("Estimate accuracy range (±%)", 10, 40, int(st.session_state.get("load_acc", 0.25) * 100), 5) / 100.0
 if sb.button("Reset edited rates/quantities"):
     st.session_state.pop("boq_editor", None)
 
-# ============================== ENGINEERING (Calculated in USD Base) ===========
+# ============================== ENGINEERING ==================================
 current = kw * 1000 / (1.732 * V * pf)
 
 TX_SIZES = [250, 500, 750, 1000, 1500, 2000, 2500, 5000]
@@ -318,7 +447,6 @@ rows = [
     ("02.1.2", "Site Preliminaries (fencing, permits, supervision, temp power)", 1.0, "item", prelims),
 ]
 df = pd.DataFrame(rows, columns=["Ref", "Item Description", "Qty", "Unit", RATE])
-# Convert all values from USD base into independent target presentation currency
 df[RATE] = df[RATE].astype(float) * fx_multiplier
 
 assumptions = [
@@ -336,6 +464,22 @@ assumptions = [
 tab1, tab2, tab3 = st.tabs(["⚡ CapEx Calculator & BOQ", "📥 Export & Assumptions", "🤖 AI Co-Pilot"])
 
 with tab1:
+    # --- SAVE CURRENT CONFIGURATION FORM ---
+    with st.expander("💾 Save Current Project to Database"):
+        proj_name_input = st.text_input("Project Name / ID", value="Site_Alpha_01")
+        if st.button("Save Project"):
+            if proj_name_input.strip():
+                p_payload = {
+                    "region": selected_region, "currency": curr_code, "kw": kw, "voltage": volt_label,
+                    "length": length, "ground": ground, "contingency": contingency, "accuracy": accuracy,
+                    "include_tx": include_tx, "bypass": bypass, "labor_idx": labor_idx if is_uk else 1.00,
+                    "trench_soft": trench_soft, "trench_mixed": trench_mixed, "trench_exist": trench_exist
+                }
+                save_project_to_db(proj_name_input.strip(), p_payload)
+                st.success(f"Project '{proj_name_input.strip()}' saved successfully!")
+            else:
+                st.warning("Please enter a valid project name.")
+
     if is_lv and (runs > 2 or kw > 1000):
         st.warning("Load is high for a Low Voltage connection. Check whether an MV connection is more realistic.")
     if need_a > RATINGS[-1]:
@@ -366,7 +510,7 @@ with tab1:
     r1, r2 = st.columns(2)
     r1.metric(f"Low Estimate (-{accuracy:.0%})", f"{sym}{grand * (1 - accuracy):,.0f}")
     r2.metric(f"High Estimate (+{accuracy:.0%})", f"{sym}{grand * (1 + accuracy):,.0f}")
-    
+
 with tab2:
     st.subheader("📥 Export Reports")
     st.caption("Download your finalized estimate as an Excel workbook or a PDF executive summary.")
