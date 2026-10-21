@@ -1,6 +1,7 @@
 import io
 import math
 import sqlite3
+import hashlib
 import pandas as pd
 import requests
 import streamlit as st
@@ -15,13 +16,20 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 st.set_page_config(page_title="Solar & BESS CapEx Engine", page_icon="⚡", layout="wide")
 
 
-# ============================== DATABASE INITIALIZATION ======================
+# ============================== DATABASE & AUTH INITIALIZATION ===============
 def init_db():
     conn = sqlite3.connect("capex_projects.db", check_same_thread=False)
     c = conn.cursor()
     c.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password_hash TEXT
+        )
+    ''')
+    c.execute('''
         CREATE TABLE IF NOT EXISTS projects (
-            name TEXT PRIMARY KEY,
+            name TEXT,
+            username TEXT,
             region TEXT,
             currency TEXT,
             kw REAL,
@@ -35,7 +43,8 @@ def init_db():
             labor_idx REAL,
             trench_soft REAL,
             trench_mixed REAL,
-            trench_exist REAL
+            trench_exist REAL,
+            PRIMARY KEY (name, username)
         )
     ''')
     conn.commit()
@@ -43,15 +52,39 @@ def init_db():
 
 init_db()
 
-def save_project_to_db(name, data):
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def register_user(username, password):
+    try:
+        conn = sqlite3.connect("capex_projects.db", check_same_thread=False)
+        c = conn.cursor()
+        c.execute('INSERT INTO users (username, password_hash) VALUES (?, ?)', (username, hash_password(password)))
+        conn.commit()
+        conn.close()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+def verify_user(username, password):
+    conn = sqlite3.connect("capex_projects.db", check_same_thread=False)
+    c = conn.cursor()
+    c.execute('SELECT password_hash FROM users WHERE username = ?', (username,))
+    row = c.fetchone()
+    conn.close()
+    if row and row[0] == hash_password(password):
+        return True
+    return False
+
+def save_project_to_db(username, name, data):
     conn = sqlite3.connect("capex_projects.db", check_same_thread=False)
     c = conn.cursor()
     c.execute('''
         INSERT OR REPLACE INTO projects 
-        (name, region, currency, kw, voltage, length, ground, contingency, accuracy, include_tx, bypass, labor_idx, trench_soft, trench_mixed, trench_exist)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (name, username, region, currency, kw, voltage, length, ground, contingency, accuracy, include_tx, bypass, labor_idx, trench_soft, trench_mixed, trench_exist)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
-        name, data["region"], data["currency"], data["kw"], data["voltage"], 
+        name, username, data["region"], data["currency"], data["kw"], data["voltage"], 
         data["length"], data["ground"], data["contingency"], data["accuracy"], 
         int(data["include_tx"]), int(data["bypass"]), data["labor_idx"], 
         data["trench_soft"], data["trench_mixed"], data["trench_exist"]
@@ -59,35 +92,82 @@ def save_project_to_db(name, data):
     conn.commit()
     conn.close()
 
-def load_project_from_db(name):
+def load_project_from_db(username, name):
     conn = sqlite3.connect("capex_projects.db", check_same_thread=False)
     c = conn.cursor()
-    c.execute('SELECT * FROM projects WHERE name = ?', (name,))
+    c.execute('SELECT * FROM projects WHERE name = ? AND username = ?', (name, username))
     row = c.fetchone()
     conn.close()
     if row:
         return {
-            "region": row[1], "currency": row[2], "kw": row[3], "voltage": row[4],
-            "length": row[5], "ground": row[6], "contingency": row[7], "accuracy": row[8],
-            "include_tx": bool(row[9]), "bypass": bool(row[10]), "labor_idx": row[11],
-            "trench_soft": row[12], "trench_mixed": row[13], "trench_exist": row[14]
+            "region": row[2], "currency": row[3], "kw": row[4], "voltage": row[5],
+            "length": row[6], "ground": row[7], "contingency": row[8], "accuracy": row[9],
+            "include_tx": bool(row[10]), "bypass": bool(row[11]), "labor_idx": row[12],
+            "trench_soft": row[13], "trench_mixed": row[14], "trench_exist": row[15]
         }
     return None
 
-def get_all_project_names():
+def get_all_project_names(username):
     conn = sqlite3.connect("capex_projects.db", check_same_thread=False)
     c = conn.cursor()
-    c.execute('SELECT name FROM projects')
+    c.execute('SELECT name FROM projects WHERE username = ?', (username,))
     rows = c.fetchall()
     conn.close()
     return [r[0] for r in rows]
 
-def delete_project_from_db(name):
+def delete_project_from_db(username, name):
     conn = sqlite3.connect("capex_projects.db", check_same_thread=False)
     c = conn.cursor()
-    c.execute('DELETE FROM projects WHERE name = ?', (name,))
+    c.execute('DELETE FROM projects WHERE name = ? AND username = ?', (name, username))
     conn.commit()
     conn.close()
+
+
+# ============================== AUTHENTICATION SCREEN ========================
+st.session_state.setdefault("logged_in", False)
+st.session_state.setdefault("username", "")
+
+if not st.session_state["logged_in"]:
+    st.title("⚡ Solar & BESS Interconnection CapEx Engine")
+    st.markdown("Log in to access your project vault, or continue as a guest to use the calculator immediately.")
+    
+    auth_tab1, auth_tab2 = st.tabs(["🔐 Login", "📝 Register"])
+    
+    with auth_tab1:
+        with st.form("login_form"):
+            l_user = st.text_input("Username")
+            l_pass = st.text_input("Password", type="password")
+            l_submit = st.form_submit_button("Login", type="primary")
+            if l_submit:
+                if verify_user(l_user, l_pass):
+                    st.session_state["logged_in"] = True
+                    st.session_state["username"] = l_user
+                    st.success("Logged in successfully!")
+                    st.rerun()
+                else:
+                    st.error("Invalid username or password.")
+                    
+    with auth_tab2:
+        with st.form("register_form"):
+            r_user = st.text_input("Choose Username")
+            r_pass = st.text_input("Choose Password", type="password")
+            r_submit = st.form_submit_button("Register")
+            if r_submit:
+                if r_user and r_pass:
+                    if register_user(r_user, r_pass):
+                        st.success("Registration successful! Please switch to the Login tab.")
+                    else:
+                        st.error("Username already taken. Please choose another.")
+                else:
+                    st.warning("Please fill in both fields.")
+    
+    st.markdown("---")
+    if st.button("🚀 Continue as Guest (Skip Login)", type="secondary", use_container_width=True):
+        st.session_state["logged_in"] = True
+        st.session_state["username"] = "Guest"
+        st.rerun()
+        
+    st.stop()
 
 
 # ============================== GLOBAL MASTER MARKET TRACKER ==================
@@ -225,20 +305,30 @@ def build_excel(df_boq, inputs, cont_pct, acc, sym):
 
 
 st.title("⚡ Solar & BESS Interconnection CapEx Engine")
-st.caption("Global Master Tracker with Database Persistence, Multi-Currency Conversion & Manual UK Cost Controls.")
+st.caption(f"Active Session: **{st.session_state['username']}** | Global Master Tracker & Manual UK Cost Controls.")
 st.markdown("---")
 
 # ============================== SIDEBAR CONTROLS =============================
 sb = st.sidebar
 
+# --- USER PROFILE & LOGOUT ---
+sb.markdown(f"👤 **User:** `{st.session_state['username']}`")
+if sb.button("🔐 Log In / Switch Account", type="secondary"):
+    st.session_state["logged_in"] = False
+    st.session_state["username"] = ""
+    st.rerun()
+
+sb.markdown("---")
+
 # --- PROJECT SAVE / LOAD MANAGER ---
 sb.header("💾 Project Vault (Database)")
-saved_projects = get_all_project_names()
+current_user = st.session_state["username"]
+saved_projects = get_all_project_names(current_user)
 selected_saved_proj = sb.selectbox("Load Saved Project", ["-- Select Project --"] + saved_projects)
 
 if selected_saved_proj != "-- Select Project --":
     if sb.button("📂 Load Project"):
-        p_data = load_project_from_db(selected_saved_proj)
+        p_data = load_project_from_db(current_user, selected_saved_proj)
         if p_data:
             st.session_state["load_region"] = p_data["region"]
             st.session_state["load_currency"] = p_data["currency"]
@@ -258,7 +348,7 @@ if selected_saved_proj != "-- Select Project --":
             st.rerun()
 
     if sb.button("🗑️ Delete Project", type="secondary"):
-        delete_project_from_db(selected_saved_proj)
+        delete_project_from_db(current_user, selected_saved_proj)
         st.success(f"Deleted '{selected_saved_proj}'.")
         st.rerun()
 
@@ -465,7 +555,7 @@ tab1, tab2, tab3 = st.tabs(["⚡ CapEx Calculator & BOQ", "📥 Export & Assumpt
 
 with tab1:
     # --- SAVE CURRENT CONFIGURATION FORM ---
-    with st.expander("💾 Save Current Project to Database"):
+    with st.expander("💾 Save Current Project to Vault"):
         proj_name_input = st.text_input("Project Name / ID", value="Site_Alpha_01")
         if st.button("Save Project"):
             if proj_name_input.strip():
@@ -475,8 +565,8 @@ with tab1:
                     "include_tx": include_tx, "bypass": bypass, "labor_idx": labor_idx if is_uk else 1.00,
                     "trench_soft": trench_soft, "trench_mixed": trench_mixed, "trench_exist": trench_exist
                 }
-                save_project_to_db(proj_name_input.strip(), p_payload)
-                st.success(f"Project '{proj_name_input.strip()}' saved successfully!")
+                save_project_to_db(current_user, proj_name_input.strip(), p_payload)
+                st.success(f"Project '{proj_name_input.strip()}' saved successfully to your vault!")
             else:
                 st.warning("Please enter a valid project name.")
 
